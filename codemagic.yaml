@@ -5,15 +5,18 @@ workflows:
     environment:
       xcode: latest
       cocoapods: default
+      # تم إضافة هذا القسم لربط الحساب بالشكل الصحيح
+      integrations:
+        app_store_connect: codemagic
       vars:
         BUNDLE_ID: "com.c0derz.premiumiptv"
         XCODE_PROJECT: "PremiumIPTV.xcodeproj"
         XCODE_SCHEME: "PremiumIPTV"
-      # Add these as encrypted env vars in Codemagic UI:
-      # APP_STORE_CONNECT_ISSUER_ID
-      # APP_STORE_CONNECT_KEY_IDENTIFIER
-      # APP_STORE_CONNECT_PRIVATE_KEY
-      # CERTIFICATE_PRIVATE_KEY
+        # تأكد من إضافة هذه المتغيرات مشفرة داخل واجهة Codemagic UI إذا لم تكن قد أضفتها بعد:
+        # APP_STORE_CONNECT_ISSUER_ID
+        # APP_STORE_CONNECT_KEY_IDENTIFIER
+        # APP_STORE_CONNECT_PRIVATE_KEY
+        # CERTIFICATE_PRIVATE_KEY
     triggering:
       events:
         - push
@@ -25,7 +28,7 @@ workflows:
           keychain initialize
           app-store-connect fetch-signing-files \
             "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
+            "--type" IOS_APP_STORE \
             --create
           keychain add-certificates
           xcode-project use-profiles
