@@ -11,47 +11,51 @@ workflows:
       - name: Build and package IPA
         script: |
           #!/bin/bash
-          set -e  # stop immediately if any command fails
+          set -e
 
           ARCHIVE="$CM_BUILD_DIR/PremiumIPTV.xcarchive"
           PAYLOAD="$CM_BUILD_DIR/Payload"
           IPA="$CM_BUILD_DIR/PremiumIPTV.ipa"
 
-          echo "=== Step 1: Archive ==="
+          echo "=== Step 1: Archive (no signing) ==="
           xcodebuild archive \
             -project PremiumIPTV.xcodeproj \
             -scheme PremiumIPTV \
             -configuration Release \
             -archivePath "$ARCHIVE" \
-            CODE_SIGN_IDENTITY="" \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY_NAME=""
 
-          echo "=== Step 2: Verify archive exists ==="
+          echo "=== Step 2: Verify archive ==="
           if [ ! -d "$ARCHIVE" ]; then
-            echo "ERROR: Archive was not created. Check build logs above."
+            echo "ERROR: archive not created"
             exit 1
           fi
-          echo "Archive OK: $ARCHIVE"
+          echo "Archive OK"
 
-          echo "=== Step 3: Find .app inside archive ==="
-          APP=$(find "$ARCHIVE" -name "*.app" -maxdepth 4 | head -1)
+          echo "=== Step 3: Find .app ==="
+          APP=$(find "$ARCHIVE" -name "*.app" -maxdepth 5 | head -1)
           if [ -z "$APP" ]; then
-            echo "ERROR: No .app found inside xcarchive. Archive contents:"
-            find "$ARCHIVE" -maxdepth 5
+            echo "ERROR: no .app found. xcarchive tree:"
+            find "$ARCHIVE" -maxdepth 6
             exit 1
           fi
-          echo "Found .app at: $APP"
-          echo "App size: $(du -sh "$APP" | cut -f1)"
+          echo "Found: $APP  ($(du -sh "$APP" | cut -f1))"
 
-          echo "=== Step 4: Package into IPA ==="
+          echo "=== Step 4: Pack IPA ==="
           rm -rf "$PAYLOAD"
           mkdir -p "$PAYLOAD"
           cp -R "$APP" "$PAYLOAD/"
           cd "$CM_BUILD_DIR"
           zip -r "PremiumIPTV.ipa" Payload/
           echo "IPA size: $(du -sh "$IPA" | cut -f1)"
-
           echo "=== Done ==="
 
     artifacts:
