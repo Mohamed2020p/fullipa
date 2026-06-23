@@ -1,47 +1,103 @@
 workflows:
-  ios-sideload-release:
-    name: Premium IPTV iOS Sideload (Forced Manual)
+
+  # ─────────────────────────────────────────────────────────
+  # WORKFLOW 1 — Personal-team IPA (sideload / AltStore / Sideloadly)
+  # No paid Apple Developer account needed.
+  # No App Store Connect API keys needed.
+  # Just connect your repo and hit Start Build.
+  # Download the .ipa from the Artifacts tab, then sideload it.
+  # ─────────────────────────────────────────────────────────
+  ios-sideload:
+    name: Premium IPTV – Sideload IPA
     max_build_duration: 60
+
+    environment:
+      xcode: latest          # Xcode 15 or newer
+      # NO cocoapods needed — project has zero pod dependencies
+
+    scripts:
+      - name: Set build number from commit count
+        script: |
+          BUILD=$(git rev-list --count HEAD)
+          agvtool new-version -all "$BUILD"
+
+      - name: Build unsigned IPA (personal team)
+        script: |
+          # ── 1. Archive ──────────────────────────────────────────────────
+          xcodebuild archive \
+            -project PremiumIPTV.xcodeproj \
+            -scheme  PremiumIPTV \
+            -configuration Release \
+            -archivePath "$CM_BUILD_DIR/PremiumIPTV.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+          # ── 2. Package into .ipa without re-signing ──────────────────────
+          mkdir -p "$CM_BUILD_DIR/ipa/Payload"
+          cp -R \
+            "$CM_BUILD_DIR/PremiumIPTV.xcarchive/Products/Applications/PremiumIPTV.app" \
+            "$CM_BUILD_DIR/ipa/Payload/"
+          cd "$CM_BUILD_DIR/ipa"
+          zip -qr "../PremiumIPTV.ipa" Payload/
+          echo "✅ IPA created at $CM_BUILD_DIR/PremiumIPTV.ipa"
+
+    artifacts:
+      - $CM_BUILD_DIR/PremiumIPTV.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    # No publishing block — just download the IPA from the Artifacts tab
+    # and install it with Sideloadly, AltStore, or a USB tool.
+
+
+  # ─────────────────────────────────────────────────────────
+  # WORKFLOW 2 — Ad-hoc IPA signed with your own P12 + profile
+  # Use this if you want to install on a specific device
+  # by UDID without jailbreak and without App Store.
+  #
+  # Required environment variables (add encrypted in Codemagic UI):
+  #   CERTIFICATE_PRIVATE_KEY   – your P12 as base64
+  #   CERTIFICATE_PASSWORD      – P12 password (can be empty string)
+  #   PROVISIONING_PROFILE      – your .mobileprovision as base64
+  # ─────────────────────────────────────────────────────────
+  ios-adhoc:
+    name: Premium IPTV – Ad-hoc IPA (signed)
+    max_build_duration: 60
+
     environment:
       xcode: latest
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: main
+      vars:
+        BUNDLE_ID:     "com.c0derz.premiumiptv"
+        XCODE_PROJECT: "PremiumIPTV.xcodeproj"
+        XCODE_SCHEME:  "PremiumIPTV"
+
     scripts:
-      - name: Build App for Sideloadly
+      - name: Import certificate and profile
         script: |
-          set -e 
-          
-          # إجبار Xcode على استخدام التوقيع اليدوي وتجاهل إعدادات المشروع التلقائية
-          xcodebuild clean build \
-            -project "PremiumIPTV.xcodeproj" \
-            -scheme "PremiumIPTV" \
-            -configuration Release \
-            -sdk iphoneos \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CODE_SIGN_ENTITLEMENTS="" \
-            SYMROOT=$(PWD)/build
-          
-          echo "تحقق من وجود الملف التنفيذي..."
-          # هذا السطر سيفشل البناء إذا لم يجد ملفاً تنفيذياً كبيراً، لضمان عدم حصولك على ملف فارغ مرة أخرى
-          find build/Release-iphoneos -name "*.app" -exec ls -lh {} \;
-          
-          echo "Packaging..."
-          mkdir -p Payload
-          cp -r build/Release-iphoneos/*.app Payload/
-          
-          echo "حجم الملف النهائي:"
-          du -sh Payload/*.app
-          
-          zip -r PremiumIPTV_Sideloadly.ipa Payload
-          
+          keychain initialize
+
+          # Decode and import the P12 certificate
+          echo "$CERTIFICATE_PRIVATE_KEY" | base64 --decode > /tmp/cert.p12
+          keychain add-certificates --certificate /tmp/cert.p12 \
+            --certificate-password "$CERTIFICATE_PASSWORD"
+
+          # Decode and install the provisioning profile
+          echo "$PROVISIONING_PROFILE" | base64 --decode > /tmp/profile.mobileprovision
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          PROFILE_UUID=$(grep -a -A1 'UUID' /tmp/profile.mobileprovision \
+            | grep -o '[0-9a-fA-F\-]\{36\}')
+          cp /tmp/profile.mobileprovision \
+            ~/Library/MobileDevice/Provisioning\ Profiles/"$PROFILE_UUID".mobileprovision
+
+      - name: Build signed Ad-hoc IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme  "$XCODE_SCHEME" \
+            --config  Release \
+            --archive-flags="-destination 'generic/platform=iOS'"
+
     artifacts:
-      - PremiumIPTV_Sideloadly.ipa
+      - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
