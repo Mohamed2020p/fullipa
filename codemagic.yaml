@@ -1,6 +1,6 @@
 workflows:
-  ios-release-manual:
-    name: Premium IPTV iOS Release (NO API)
+  ios-sideload-release:
+    name: Premium IPTV iOS Sideload (No Signing)
     max_build_duration: 60
     environment:
       xcode: latest
@@ -8,45 +8,50 @@ workflows:
       vars:
         XCODE_PROJECT: "PremiumIPTV.xcodeproj"
         XCODE_SCHEME: "PremiumIPTV"
-        # YOU ONLY NEED THESE 3 VARIABLES UPLOADED IN CODEMAGIC UI:
-        # CM_CERTIFICATE (Your .p12 file)
-        # CM_CERTIFICATE_PASSWORD (Password for the .p12)
-        # CM_PROVISIONING_PROFILE (Your .mobileprovision file)
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
     scripts:
-      - name: Install CocoaPods (Fixes Code 65 if dependencies are missing)
+      - name: Install CocoaPods
         script: |
           if [ -f "Podfile" ]; then
             pod install --repo-update
           else
-            echo "No Podfile found, moving on..."
+            echo "No Podfile found, skipping..."
           fi
           
-      - name: Set up Manual Code Signing (Zero APIs)
+      - name: Build Unsigned App for Sideloadly
         script: |
-          keychain initialize
-          keychain add-certificates \
-            --certificate "$CM_CERTIFICATE" \
-            --certificate-password "$CM_CERTIFICATE_PASSWORD"
-          xcode-project use-profiles --profile "$CM_PROVISIONING_PROFILE"
-          
-      - name: Build IPA
-        script: |
-          # If CocoaPods created a workspace, we MUST use it, otherwise Code 65 happens
+          # Compile the app for a real iPhone but strictly disable ALL Apple signing
           if [ -d "PremiumIPTV.xcworkspace" ]; then
-            xcode-project build-ipa \
-              --workspace "PremiumIPTV.xcworkspace" \
-              --scheme "$XCODE_SCHEME"
+            xcodebuild clean build \
+              -workspace "PremiumIPTV.xcworkspace" \
+              -scheme "$XCODE_SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_IDENTITY="" \
+              SYMROOT=$(PWD)/build | xcpretty
           else
-            xcode-project build-ipa \
-              --project "$XCODE_PROJECT" \
-              --scheme "$XCODE_SCHEME"
+            xcodebuild clean build \
+              -project "$XCODE_PROJECT" \
+              -scheme "$XCODE_SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_IDENTITY="" \
+              SYMROOT=$(PWD)/build | xcpretty
           fi
+          
+          # Manually package the raw code into an .ipa file format for Sideloadly
+          mkdir -p Payload
+          cp -r build/Release-iphoneos/PremiumIPTV.app Payload/
+          zip -r PremiumIPTV_unsigned_sideload.ipa Payload
           
     artifacts:
-      - build/ios/ipa/*.ipa
+      - PremiumIPTV_unsigned_sideload.ipa
       - /tmp/xcodebuild_logs/*.log
