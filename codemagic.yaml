@@ -8,27 +8,45 @@ workflows:
       vars:
         XCODE_PROJECT: "PremiumIPTV.xcodeproj"
         XCODE_SCHEME: "PremiumIPTV"
-        # We ripped out the API. You will upload the raw files to Codemagic UI instead:
-        # CM_CERTIFICATE (This will be your .p12 file)
-        # CM_CERTIFICATE_PASSWORD (The password for your .p12)
-        # CM_PROVISIONING_PROFILE (This will be your .mobileprovision file)
+        # YOU ONLY NEED THESE 3 VARIABLES UPLOADED IN CODEMAGIC UI:
+        # CM_CERTIFICATE (Your .p12 file)
+        # CM_CERTIFICATE_PASSWORD (Password for the .p12)
+        # CM_PROVISIONING_PROFILE (Your .mobileprovision file)
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
     scripts:
-      - name: Set up manual code signing (No Apple API)
+      - name: Install CocoaPods (Fixes Code 65 if dependencies are missing)
+        script: |
+          if [ -f "Podfile" ]; then
+            pod install --repo-update
+          else
+            echo "No Podfile found, moving on..."
+          fi
+          
+      - name: Set up Manual Code Signing (Zero APIs)
         script: |
           keychain initialize
           keychain add-certificates \
             --certificate "$CM_CERTIFICATE" \
             --certificate-password "$CM_CERTIFICATE_PASSWORD"
           xcode-project use-profiles --profile "$CM_PROVISIONING_PROFILE"
+          
       - name: Build IPA
         script: |
-          xcode-project build-ipa \
-            --project "$XCODE_PROJECT" \
-            --scheme "$XCODE_SCHEME"
+          # If CocoaPods created a workspace, we MUST use it, otherwise Code 65 happens
+          if [ -d "PremiumIPTV.xcworkspace" ]; then
+            xcode-project build-ipa \
+              --workspace "PremiumIPTV.xcworkspace" \
+              --scheme "$XCODE_SCHEME"
+          else
+            xcode-project build-ipa \
+              --project "$XCODE_PROJECT" \
+              --scheme "$XCODE_SCHEME"
+          fi
+          
     artifacts:
       - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
