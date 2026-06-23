@@ -10,40 +10,41 @@ workflows:
     scripts:
       - name: Debug environment
         script: |
-          #!/bin/bash
-          echo "=== Working directory ==="
-          pwd
-          echo ""
-          echo "=== Repo contents ==="
+          echo "PWD: $(pwd)"
+          echo "HOME: $HOME"
+          echo "CM_BUILD_DIR: $CM_BUILD_DIR"
+          echo "--- root contents ---"
           ls -la
-          echo ""
-          echo "=== Looking for .xcodeproj ==="
-          find . -name "*.xcodeproj" -maxdepth 4
-          echo ""
-          echo "=== Xcode version ==="
-          xcodebuild -version
-          echo ""
-          echo "=== Available schemes ==="
-          find . -name "*.xcodeproj" -maxdepth 4 | while read proj; do
-            echo "Schemes in $proj:"
-            xcodebuild -project "$proj" -list 2>&1 || true
-          done
+          echo "--- find xcodeproj ---"
+          find / -name "*.xcodeproj" -maxdepth 8 2>/dev/null || true
 
       - name: Build and package IPA
         script: |
           #!/bin/bash
           set -e
 
-          # Find the project file dynamically — don't assume working directory
-          PROJ=$(find "$CM_BUILD_DIR" -name "*.xcodeproj" -maxdepth 5 | head -1)
-          PROJ_DIR=$(dirname "$PROJ")
-          echo "Project found at: $PROJ"
-          echo "Project dir: $PROJ_DIR"
-          cd "$PROJ_DIR"
+          echo "PWD at start: $(pwd)"
 
-          ARCHIVE="$CM_BUILD_DIR/PremiumIPTV.xcarchive"
-          PAYLOAD="$CM_BUILD_DIR/Payload"
-          IPA="$CM_BUILD_DIR/PremiumIPTV.ipa"
+          # Use pwd as the base — Codemagic clones into the working directory
+          REPO_ROOT="$(pwd)"
+
+          PROJ=$(find "$REPO_ROOT" -name "*.xcodeproj" -maxdepth 5 | head -1)
+          if [ -z "$PROJ" ]; then
+            echo "ERROR: no .xcodeproj found under $REPO_ROOT"
+            find "$REPO_ROOT" -maxdepth 6
+            exit 1
+          fi
+
+          PROJ_DIR=$(dirname "$PROJ")
+          echo "Project: $PROJ"
+          cd "$PROJ_DIR"
+          echo "cd into: $(pwd)"
+
+          OUT="$REPO_ROOT/build_output"
+          ARCHIVE="$OUT/PremiumIPTV.xcarchive"
+          PAYLOAD="$OUT/Payload"
+          IPA="$OUT/PremiumIPTV.ipa"
+          mkdir -p "$OUT"
 
           echo "=== Step 1: Archive ==="
           xcodebuild archive \
@@ -71,7 +72,7 @@ workflows:
           echo "=== Step 3: Find .app ==="
           APP=$(find "$ARCHIVE" -name "*.app" -maxdepth 5 | head -1)
           if [ -z "$APP" ]; then
-            echo "ERROR: no .app found. xcarchive tree:"
+            echo "ERROR: no .app found. xcarchive contents:"
             find "$ARCHIVE" -maxdepth 6
             exit 1
           fi
@@ -81,11 +82,11 @@ workflows:
           rm -rf "$PAYLOAD"
           mkdir -p "$PAYLOAD"
           cp -R "$APP" "$PAYLOAD/"
-          cd "$CM_BUILD_DIR"
+          cd "$OUT"
           zip -r "PremiumIPTV.ipa" Payload/
           echo "IPA size: $(du -sh "$IPA" | cut -f1)"
           echo "=== Done ==="
 
     artifacts:
-      - $CM_BUILD_DIR/PremiumIPTV.ipa
+      - "**/build_output/PremiumIPTV.ipa"
       - /tmp/xcodebuild_logs/*.log
