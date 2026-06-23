@@ -8,18 +8,46 @@ workflows:
       xcode: latest
 
     scripts:
+      - name: Debug environment
+        script: |
+          #!/bin/bash
+          echo "=== Working directory ==="
+          pwd
+          echo ""
+          echo "=== Repo contents ==="
+          ls -la
+          echo ""
+          echo "=== Looking for .xcodeproj ==="
+          find . -name "*.xcodeproj" -maxdepth 4
+          echo ""
+          echo "=== Xcode version ==="
+          xcodebuild -version
+          echo ""
+          echo "=== Available schemes ==="
+          find . -name "*.xcodeproj" -maxdepth 4 | while read proj; do
+            echo "Schemes in $proj:"
+            xcodebuild -project "$proj" -list 2>&1 || true
+          done
+
       - name: Build and package IPA
         script: |
           #!/bin/bash
           set -e
 
+          # Find the project file dynamically — don't assume working directory
+          PROJ=$(find "$CM_BUILD_DIR" -name "*.xcodeproj" -maxdepth 5 | head -1)
+          PROJ_DIR=$(dirname "$PROJ")
+          echo "Project found at: $PROJ"
+          echo "Project dir: $PROJ_DIR"
+          cd "$PROJ_DIR"
+
           ARCHIVE="$CM_BUILD_DIR/PremiumIPTV.xcarchive"
           PAYLOAD="$CM_BUILD_DIR/Payload"
           IPA="$CM_BUILD_DIR/PremiumIPTV.ipa"
 
-          echo "=== Step 1: Archive (no signing) ==="
+          echo "=== Step 1: Archive ==="
           xcodebuild archive \
-            -project PremiumIPTV.xcodeproj \
+            -project "$PROJ" \
             -scheme PremiumIPTV \
             -configuration Release \
             -archivePath "$ARCHIVE" \
