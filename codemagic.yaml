@@ -1,6 +1,6 @@
 workflows:
   ios-sideload-release:
-    name: Premium IPTV iOS Sideload (Ad-Hoc)
+    name: Premium IPTV iOS Sideload (Forced)
     max_build_duration: 60
     environment:
       xcode: latest
@@ -12,11 +12,10 @@ workflows:
     scripts:
       - name: Build App for Sideloadly
         script: |
-          # Stop the build immediately if Xcode crashes
           set -e 
           
-          # Force Xcode to build the actual binary by using Ad-Hoc signing ("-")
-          # This creates a valid app structure without needing Apple API keys.
+          # We add these extra flags to override internal Xcode project settings
+          # that usually cause Code 65 errors.
           xcodebuild clean build \
             -project "PremiumIPTV.xcodeproj" \
             -scheme "PremiumIPTV" \
@@ -24,13 +23,15 @@ workflows:
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             SYMROOT=$(PWD)/build
           
-          echo "Zipping up the raw Payload..."
+          echo "Packaging..."
           mkdir -p Payload
           
-          # Grab the actual built app (which will now have the heavy binary inside)
+          # Copy the app to the Payload folder
           cp -r build/Release-iphoneos/*.app Payload/
           zip -r PremiumIPTV_Sideloadly.ipa Payload
           
