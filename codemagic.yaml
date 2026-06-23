@@ -1,6 +1,6 @@
 workflows:
   ios-sideload-release:
-    name: Premium IPTV iOS Sideload (Forced)
+    name: Premium IPTV iOS Sideload (Forced Manual)
     max_build_duration: 60
     environment:
       xcode: latest
@@ -14,25 +14,32 @@ workflows:
         script: |
           set -e 
           
-          # We add these extra flags to override internal Xcode project settings
-          # that usually cause Code 65 errors.
+          # إجبار Xcode على استخدام التوقيع اليدوي وتجاهل إعدادات المشروع التلقائية
           xcodebuild clean build \
             -project "PremiumIPTV.xcodeproj" \
             -scheme "PremiumIPTV" \
             -configuration Release \
             -sdk iphoneos \
+            CODE_SIGN_STYLE=Manual \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_ENTITLEMENTS="" \
             SYMROOT=$(PWD)/build
+          
+          echo "تحقق من وجود الملف التنفيذي..."
+          # هذا السطر سيفشل البناء إذا لم يجد ملفاً تنفيذياً كبيراً، لضمان عدم حصولك على ملف فارغ مرة أخرى
+          find build/Release-iphoneos -name "*.app" -exec ls -lh {} \;
           
           echo "Packaging..."
           mkdir -p Payload
-          
-          # Copy the app to the Payload folder
           cp -r build/Release-iphoneos/*.app Payload/
+          
+          echo "حجم الملف النهائي:"
+          du -sh Payload/*.app
+          
           zip -r PremiumIPTV_Sideloadly.ipa Payload
           
     artifacts:
