@@ -1,57 +1,39 @@
 workflows:
   ios-sideload-release:
-    name: Premium IPTV iOS Sideload (No Signing)
+    name: Premium IPTV iOS Sideload (Ad-Hoc)
     max_build_duration: 60
     environment:
       xcode: latest
-      cocoapods: default
-      vars:
-        XCODE_PROJECT: "PremiumIPTV.xcodeproj"
-        XCODE_SCHEME: "PremiumIPTV"
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
     scripts:
-      - name: Install CocoaPods
+      - name: Build App for Sideloadly
         script: |
-          if [ -f "Podfile" ]; then
-            pod install --repo-update
-          else
-            echo "No Podfile found, skipping..."
-          fi
+          # Stop the build immediately if Xcode crashes
+          set -e 
           
-      - name: Build Unsigned App for Sideloadly
-        script: |
-          # Compile the app for a real iPhone but strictly disable ALL Apple signing
-          if [ -d "PremiumIPTV.xcworkspace" ]; then
-            xcodebuild clean build \
-              -workspace "PremiumIPTV.xcworkspace" \
-              -scheme "$XCODE_SCHEME" \
-              -configuration Release \
-              -sdk iphoneos \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_IDENTITY="" \
-              SYMROOT=$(PWD)/build | xcpretty
-          else
-            xcodebuild clean build \
-              -project "$XCODE_PROJECT" \
-              -scheme "$XCODE_SCHEME" \
-              -configuration Release \
-              -sdk iphoneos \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_IDENTITY="" \
-              SYMROOT=$(PWD)/build | xcpretty
-          fi
+          # Force Xcode to build the actual binary by using Ad-Hoc signing ("-")
+          # This creates a valid app structure without needing Apple API keys.
+          xcodebuild clean build \
+            -project "PremiumIPTV.xcodeproj" \
+            -scheme "PremiumIPTV" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            SYMROOT=$(PWD)/build
           
-          # Manually package the raw code into an .ipa file format for Sideloadly
+          echo "Zipping up the raw Payload..."
           mkdir -p Payload
-          cp -r build/Release-iphoneos/PremiumIPTV.app Payload/
-          zip -r PremiumIPTV_unsigned_sideload.ipa Payload
+          
+          # Grab the actual built app (which will now have the heavy binary inside)
+          cp -r build/Release-iphoneos/*.app Payload/
+          zip -r PremiumIPTV_Sideloadly.ipa Payload
           
     artifacts:
-      - PremiumIPTV_unsigned_sideload.ipa
+      - PremiumIPTV_Sideloadly.ipa
       - /tmp/xcodebuild_logs/*.log
