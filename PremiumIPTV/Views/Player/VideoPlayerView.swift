@@ -19,6 +19,7 @@ struct VideoPlayerView: UIViewControllerRepresentable {
         vc.player = player
         vc.showsPlaybackControls = true
         vc.videoGravity = .resizeAspect
+        vc.allowsPictureInPicturePlayback = true
         return vc
     }
 
@@ -27,19 +28,19 @@ struct VideoPlayerView: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Main Player Widget
+// MARK: - Main Player ViewModel
 final class ChannelPlayerViewModel: ObservableObject {
     @Published var uiState: PlayerUIState = .buffering
     private var reconnectAttempt = 0
     private var reconnectTask: Task<Void, Never>?
-    private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
-    private var rateObserver: NSKeyValueObservation?
     private var stalledObserver: NSObjectProtocol?
 
     let player: AVPlayer = {
         let p = AVPlayer()
         p.automaticallyWaitsToMinimizeStalling = true
+        // مهم جداً للـ live streams
+        p.preventsDisplaySleepDuringVideoPlayback = true
         return p
     }()
 
@@ -56,7 +57,24 @@ final class ChannelPlayerViewModel: ObservableObject {
             uiState = .error("INVALID_URL")
             return
         }
-        let item = AVPlayerItem(url: url)
+
+        // FIX: استخدم AVURLAsset مع custom headers بدل AVPlayerItem مباشرةً
+        let headers: [String: String] = [
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        ]
+
+        let asset = AVURLAsset(url: url, options: [
+            "AVURLAssetHTTPHeaderFieldsKey": headers,
+            // مهم للـ .ts streams - بلاش precise timing
+            "AVURLAssetPreferPreciseDurationAndTimingKey": false
+        ])
+
+        let item = AVPlayerItem(asset: asset)
+        // buffer للـ live streams
+        item.preferredForwardBufferDuration = 3.0
+
         NotificationCenter.default.removeObserver(self)
         player.replaceCurrentItem(with: item)
 
@@ -100,16 +118,14 @@ final class ChannelPlayerViewModel: ObservableObject {
         uiState = .reconnecting(attempt: reconnectAttempt)
         let delay: UInt64
         switch reconnectAttempt {
-        case 1, 2: delay = 1_000_000_000
-        case 3, 4, 5: delay = 2_000_000_000
-        default: delay = 3_000_000_000
+        case 1, 2: delay = 2_000_000_000
+        case 3, 4, 5: delay = 4_000_000_000
+        default: delay = 6_000_000_000
         }
         reconnectTask = Task {
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self.internalLoad(urlString: urlString)
-            }
+            await MainActor.run { self.internalLoad(urlString: urlString) }
         }
     }
 
@@ -132,47 +148,36 @@ struct ChannelPlayerWidget: View {
     @Binding var isFullScreen: Bool
 
     @StateObject private var vm = ChannelPlayerViewModel()
-    @State private var livePulse = false
 
     var body: some View {
         ZStack {
             Color.black
             VideoPlayerView(player: vm.player)
 
-            // Top bar
             VStack {
                 HStack {
-                    HStack(spacing: 6) {
-                        if case .ready = vm.uiState {
+                    Button(action: { withAnimation { isFullScreen.toggle() } }) {
+                        ZStack {
                             Circle()
-                                .fill(IptvColors.live.opacity(livePulse ? 1 : 0.4))
-                                .frame(width: 8, height: 8)
-                                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: livePulse)
-                                .onAppear { livePulse = true }
+                                .fill(IptvColors.scrimLight)
+                                .frame(width: 32, height: 32)
+                            Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white)
                         }
-                        Text(channel.name)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
                     }
                     Spacer()
-                    Button(action: { isFullScreen.toggle() }) {
-                        Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 18))
-                            .foregroundColor(IptvColors.cyan)
-                    }
-                    .frame(width: 32, height: 32)
+                    Text(channel.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    Spacer()
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(IptvColors.scrimLight)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(IptvColors.borderLight, lineWidth: 0.5))
-                .padding(12)
+                .padding(.vertical, 8)
                 Spacer()
             }
 
-            // State overlays
             switch vm.uiState {
             case .buffering:
                 Color.black.opacity(0.35)
@@ -191,12 +196,9 @@ struct ChannelPlayerWidget: View {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: IptvColors.orange))
                         .scaleEffect(1.3)
-                    Text(isArabic
-                         ? "جاري إعادة الاتصال… (\(attempt) / 99)"
-                         : "Reconnecting… (\(attempt) / 99)")
+                    Text(isArabic ? "إعادة الاتصال… (\(attempt))" : "Reconnecting… (\(attempt))")
                         .font(.system(size: 12))
                         .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
                 }
 
             case .error(_):
@@ -208,9 +210,7 @@ struct ChannelPlayerWidget: View {
                     Text(isArabic ? "فشل التشغيل" : "Playback failed")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
-                    Text(isArabic
-                         ? "قد تكون هذه القناة غير متاحة أو الرابط معطل."
-                         : "This channel may be offline or the link is broken.")
+                    Text(isArabic ? "القناة غير متاحة أو الرابط معطل" : "Channel offline or link broken")
                         .font(.system(size: 12))
                         .foregroundColor(IptvColors.textSecondary)
                         .multilineTextAlignment(.center)
