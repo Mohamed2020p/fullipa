@@ -184,7 +184,15 @@ struct UploadPlaylistView: View {
                 }
                 defer { url.stopAccessingSecurityScopedResource() }
                 do {
-                    let text = try String(contentsOf: url, encoding: .utf8)
+                    // FIX (issue 2): read raw bytes and decode with the same
+                    // utf8 -> isoLatin1 -> windowsCP1252 fallback chain (plus
+                    // a BOM strip) used for the URL path, via decodeM3uData.
+                    // Before, this only tried String(contentsOf:encoding:.utf8)
+                    // directly, so any m3u file with non-UTF8 bytes, or a
+                    // leading byte-order-mark, was rejected here even though
+                    // it was a perfectly valid playlist.
+                    let data = try Data(contentsOf: url)
+                    let text = decodeM3uData(data)
                     guard isLikelyM3u(content: text) else {
                         await MainActor.run {
                             isProcessing = false
@@ -220,7 +228,7 @@ struct UploadPlaylistView: View {
                         isProcessing = false
                         errorMessage = isArabic
                             ? "ملف غير صالح! الرجاء اختيار ملف m3u. أو m3u8."
-                            : "Invalid file!"
+                            : "Invalid file! Please select an .m3u or .m3u8 file."
                     }
                 }
             }
