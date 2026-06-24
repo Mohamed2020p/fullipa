@@ -31,10 +31,18 @@ struct VideoPlayerView: UIViewControllerRepresentable {
 // MARK: - Main Player ViewModel
 final class ChannelPlayerViewModel: ObservableObject {
     @Published var uiState: PlayerUIState = .buffering
+
     private var reconnectAttempt = 0
     private var reconnectTask: Task<Void, Never>?
     private var statusObserver: NSKeyValueObservation?
-    private var stalledObserver: NSObjectProtocol?
+    private var timeControlObserver: NSKeyValueObservation?
+    private var stalledToken: NSObjectProtocol?
+    private var endTimeToken: NSObjectProtocol?
+
+    // Tracks real, repeated stalls so we only reconnect when something is
+    // actually wrong, not on every single momentary buffer dip.
+    private var recentStallTimestamps: [Date] = []
+    private var isReconnecting = false
 
     let player: AVPlayer = {
         let p = AVPlayer()
@@ -44,9 +52,34 @@ final class ChannelPlayerViewModel: ObservableObject {
         return p
     }()
 
+    init() {
+        // FIX (issue 1): drive the buffering UI from timeControlStatus instead
+        // of from the AVPlayerItemPlaybackStalled notification. timeControlStatus
+        // automatically flips back to .playing once AVPlayer recovers from a
+        // brief stall on its own, so the spinner clears itself - we don't need
+        // to manually reset anything, and we never tear the stream down for it.
+        timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            DispatchQueue.main.async {
+                guard let self, !self.isReconnecting else { return }
+                switch player.timeControlStatus {
+                case .playing:
+                    self.uiState = .ready
+                case .waitingToPlayAtSpecifiedRate:
+                    self.uiState = .buffering
+                case .paused:
+                    break
+                @unknown default:
+                    break
+                }
+            }
+        }
+    }
+
     func load(channel: Channel) {
         reconnectTask?.cancel()
         reconnectAttempt = 0
+        recentStallTimestamps.removeAll()
+        isReconnecting = false
         uiState = .buffering
         internalLoad(urlString: channel.url)
     }
@@ -72,10 +105,13 @@ final class ChannelPlayerViewModel: ObservableObject {
         ])
 
         let item = AVPlayerItem(asset: asset)
-        // buffer للـ live streams
-        item.preferredForwardBufferDuration = 3.0
+        // FIX (issue 1): bigger cushion = far fewer false-positive stalls on
+        // live streams. 3s was too thin; 8s gives AVPlayer real room to absorb
+        // normal network jitter without ever hitting "stalled".
+        item.preferredForwardBufferDuration = 8.0
 
-        NotificationCenter.default.removeObserver(self)
+        removeItemObservers()
+        isReconnecting = false
         player.replaceCurrentItem(with: item)
 
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -83,24 +119,27 @@ final class ChannelPlayerViewModel: ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self?.reconnectAttempt = 0
-                    self?.uiState = .ready
+                    self?.recentStallTimestamps.removeAll()
+                    self?.isReconnecting = false
                     self?.player.play()
                 case .failed:
+                    // A real, fatal AVFoundation error - this is worth reconnecting for.
                     self?.handleError(urlString: urlString)
-                default: break
+                default:
+                    break
                 }
             }
         }
 
-        stalledObserver = NotificationCenter.default.addObserver(
+        stalledToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
             object: item,
             queue: .main
         ) { [weak self] _ in
-            self?.handleError(urlString: urlString)
+            self?.registerStall(urlString: urlString)
         }
 
-        NotificationCenter.default.addObserver(
+        endTimeToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
@@ -112,8 +151,25 @@ final class ChannelPlayerViewModel: ObservableObject {
         player.play()
     }
 
+    // FIX (issue 1): a single stall does NOT mean the server/stream is dead -
+    // AVPlayer recovers from it on its own almost every time, and the
+    // timeControlStatus observer above already shows "buffering" while it
+    // does. We only tear down and reconnect if real stalls keep recurring
+    // repeatedly in a short window, which is a much stronger signal that the
+    // stream is actually broken rather than just hiccuping.
+    private func registerStall(urlString: String) {
+        let now = Date()
+        recentStallTimestamps.append(now)
+        recentStallTimestamps = recentStallTimestamps.filter { now.timeIntervalSince($0) < 60 }
+
+        guard recentStallTimestamps.count >= 4 else { return }
+        recentStallTimestamps.removeAll()
+        handleError(urlString: urlString)
+    }
+
     private func handleError(urlString: String) {
         reconnectTask?.cancel()
+        isReconnecting = true
         reconnectAttempt += 1
         uiState = .reconnecting(attempt: reconnectAttempt)
         let delay: UInt64
@@ -131,14 +187,32 @@ final class ChannelPlayerViewModel: ObservableObject {
 
     func retry(urlString: String) {
         reconnectAttempt = 0
+        recentStallTimestamps.removeAll()
         reconnectTask?.cancel()
+        isReconnecting = false
         uiState = .buffering
         internalLoad(urlString: urlString)
     }
 
+    // FIX: the old code called NotificationCenter.default.removeObserver(self),
+    // which is a no-op for block-based observers (self was never registered as
+    // the observer - the tokens returned by addObserver(forName:...:using:)
+    // are what need to be removed). That meant every reconnect/channel change
+    // left old observers registered forever. We now store and remove the
+    // actual tokens.
+    private func removeItemObservers() {
+        statusObserver?.invalidate()
+        statusObserver = nil
+        if let stalledToken { NotificationCenter.default.removeObserver(stalledToken) }
+        if let endTimeToken { NotificationCenter.default.removeObserver(endTimeToken) }
+        stalledToken = nil
+        endTimeToken = nil
+    }
+
     deinit {
         reconnectTask?.cancel()
-        NotificationCenter.default.removeObserver(self)
+        timeControlObserver?.invalidate()
+        removeItemObservers()
     }
 }
 
@@ -153,30 +227,6 @@ struct ChannelPlayerWidget: View {
         ZStack {
             Color.black
             VideoPlayerView(player: vm.player)
-
-            VStack {
-                HStack {
-                    Button(action: { withAnimation { isFullScreen.toggle() } }) {
-                        ZStack {
-                            Circle()
-                                .fill(IptvColors.scrimLight)
-                                .frame(width: 32, height: 32)
-                            Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 14))
-                                .foregroundColor(.white)
-                        }
-                    }
-                    Spacer()
-                    Text(channel.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                Spacer()
-            }
 
             switch vm.uiState {
             case .buffering:
@@ -232,6 +282,38 @@ struct ChannelPlayerWidget: View {
             case .ready:
                 EmptyView()
             }
+
+            // FIX (issue 3): this top bar is now drawn LAST so it always sits
+            // above the buffering/reconnecting/error overlays above. Before,
+            // the semi-transparent Color overlays in those states were drawn
+            // on top of this button and silently absorbed every tap - which is
+            // why the fullscreen button "did nothing" almost any time you
+            // tapped it (the player was buffering/reconnecting nearly
+            // constantly because of issue 1).
+            VStack {
+                HStack {
+                    Button(action: { withAnimation { isFullScreen.toggle() } }) {
+                        ZStack {
+                            Circle()
+                                .fill(IptvColors.scrimLight)
+                                .frame(width: 32, height: 32)
+                            Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    Spacer()
+                    Text(channel.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Spacer()
+            }
+            .zIndex(10)
         }
         .onAppear { vm.load(channel: channel) }
         .onChange(of: channel) { newChannel in vm.load(channel: newChannel) }
