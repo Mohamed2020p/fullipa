@@ -7,6 +7,31 @@ func isStrictlyAdult(name: String, category: String) -> Bool {
     return keywords.contains { lower.contains($0) }
 }
 
+// MARK: - Decoding helpers
+// FIX (issue 2): m3u files from Windows-based playlist tools / IPTV panels
+// are very often NOT clean UTF-8 (accented channel names saved as
+// Latin-1/Windows-1252 are common), and very often start with a UTF-8
+// byte-order mark (BOM). Before this fix, the file-picker path only tried
+// .utf8 and rejected the file outright if that failed, and a leading BOM
+// made the "#EXTM3U" header check fail even on a perfectly valid playlist
+// (the line became "\u{FEFF}#EXTM3U", which doesn't match hasPrefix("#")).
+// Both the URL-fetch path and the file-picker path now go through these
+// two helpers so a valid playlist is recognized either way.
+func decodeM3uData(_ data: Data) -> String {
+    let raw = String(data: data, encoding: .utf8)
+        ?? String(data: data, encoding: .isoLatin1)
+        ?? String(data: data, encoding: .windowsCP1252)
+        ?? ""
+    return stripBOM(raw)
+}
+
+func stripBOM(_ text: String) -> String {
+    if text.hasPrefix("\u{FEFF}") {
+        return String(text.dropFirst())
+    }
+    return text
+}
+
 // MARK: - URL detection
 func isLikelyM3u(content: String) -> Bool {
     let lines = content.components(separatedBy: .newlines)
@@ -86,7 +111,8 @@ func fetchM3uText(urlString: String) async throws -> String {
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
         throw URLError(.badServerResponse)
     }
-    return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+    // FIX: now shares the same decode + BOM-strip helper as the file picker.
+    return decodeM3uData(data)
 }
 
 // MARK: - Parse + batch insert
